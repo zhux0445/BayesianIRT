@@ -1,0 +1,757 @@
+
+```{r}
+rm(list = setdiff(ls(), lsf.str())[!(setdiff(ls(), lsf.str()) %in% "params")])
+source(here::here("R", "002-folder_paths_and_options.R"))
+
+# It's input is the following R objects:
+adni.survival.cn.mci <- readRDS(file=path(r_objects_folder, "025_adni_survival_cn_mci.rds"))
+adni.survival.cn <- readRDS(file=path(r_objects_folder, "025_adni_survival_cn.rds"))
+adni.survival.mci <- readRDS(file=path(r_objects_folder, "025_adni_survival_mci.rds"))
+
+fitted.cox.models <- readRDS(file=path(r_objects_folder, "155_fitted_cox_models.rds"))  
+
+
+```
+
+```{r}
+
+make_tidy_df <- function(mod, name) {
+  estimate_name <- quo_name(stringr::str_c("estimate_", name))
+  p.value_name <- quo_name(stringr::str_c("p.value_", name))
+  conf.low_name <- quo_name(stringr::str_c("conf.low_", name))
+  conf.high_name <- quo_name(stringr::str_c("conf.high_", name))
+  
+  broom::tidy(mod, exp = TRUE) %>%
+    select(term, estimate, conf.low, conf.high, p.value) %>%
+    rename(!!estimate_name := estimate) %>%
+    rename(!!p.value_name := p.value) %>%
+    rename(!!conf.low_name := conf.low) %>%
+    rename(!!conf.high_name := conf.high)
+}
+
+make_glance_df <- function(mod, name) {
+  
+  broom::glance(mod) %>%
+    mutate(model = name) %>%
+    select(model, n) 
+}
+
+make_table <- function(df, mytitle) {
+  df %>%
+    kable(caption = mytitle,
+        digits = c(0, rep(c(2, 2, 2, 3), 11)),
+        col.names = c("Predictor", rep(c("HR", "LCI", "UCI", "P-value"), 11))) %>%
+    kable_styling(bootstrap_options = kable.styling.bootstrap.option,
+                  full_width = F, 
+                  position = kable.styling.position.option) %>%
+    add_header_above(c("", "Model 1" = 4, 
+                      "Model 2" = 4, "Model 3" = 4, 
+                      "Model 4" = 4, "Model 5" = 4, 
+                      "Model 6" = 4, "Model 7" = 4, 
+                      "Model 8" = 4, "Model 9" = 4,
+                      "Model 10" = 4, "Model 11" = 4)) %>%
+    add_header_above(c("" , "" , "", "" , "",
+                       "Memory" = 8,
+                       "Executive Function" = 8,
+                       "Language" = 8,
+                       "Visualspatial" = 8,
+                       "All domains" = 8)) %>%
+    row_spec(0, align = "c") %>%
+    add_footnote("Reference category for the retest domains is the first quartile (best retest)") %>%
+    scroll_box(width = "600px")
+}
+
+  
+```
+
+```{r}
+
+
+make_hr_table <- function(df, model, biomarker, mytitle, 
+                        hr.digits = 2, pvalue.digits = 3,
+                        highlight.color = "#FFFFCC", highlight.pvalue = 0.05) {
+  
+  row_order_tb <- tibble(term = c(biomarker, "mem_q2", "mem_q3", "mem_q4", 
+                        "ef_q2", "ef_q3", "ef_q4", 
+                        "lang_q2", "lang_q3", "lang_q4", 
+                        "vsp_q2", "vsp_q3", "vsp_q4", 
+                        "agebl", "ptsex", "pteducat")) %>%
+    mutate(order = 1:length(term))
+  
+  # Create the tibble
+  foo <- df %>%
+    select(name, {{model}}) %>%
+    unnest(c({{model}})) %>%
+    select(term, name, estimate, p.value, conf.low, conf.high) %>%
+    mutate(name = case_when(!str_detect(name, "biomarker") ~ str_c(name, "_only"),
+                           TRUE ~ name)) %>%
+    gather(-c(1:2), key = "statistic", value = "value") %>%
+    unite("xyz", c(statistic, name)) %>%
+    spread(key = xyz, value = value) 
+  
+  # use glue to create nice cells - estimate, (95% CI)
+  foo <- foo %>%
+    mutate(hr_biomarker = case_when(!is.na(estimate_biomarker) ~ 
+     glue("{sprintf('%.*f', hr.digits, round(estimate_biomarker, hr.digits))},
+          ({sprintf('%.*f', hr.digits, round(conf.low_biomarker, hr.digits))},
+          {sprintf('%.*f', hr.digits, round(conf.high_biomarker, hr.digits))})")),
+           hr_mem_only       = case_when(!is.na(estimate_mem_only) ~
+    glue("{sprintf('%.*f', hr.digits, round(estimate_mem_only, hr.digits))},
+         ({sprintf('%.*f', hr.digits, round(conf.low_mem_only, hr.digits))},
+         {sprintf('%.*f', hr.digits, round(conf.high_mem_only, hr.digits))})")),
+           hr_mem_biomarker = case_when(!is.na(estimate_mem_biomarker) ~
+    glue("{sprintf('%.*f', hr.digits, round(estimate_mem_biomarker, hr.digits))},
+         ({sprintf('%.*f', hr.digits, round(conf.low_mem_biomarker, hr.digits))},
+         {sprintf('%.*f', hr.digits, round(conf.high_mem_biomarker, hr.digits))})")),
+           hr_ef_only = case_when(!is.na(estimate_ef_only) ~
+    glue("{sprintf('%.*f', hr.digits, round(estimate_ef_only, hr.digits))},
+         ({sprintf('%.*f', hr.digits, round(conf.low_ef_only, hr.digits))},
+         {sprintf('%.*f', hr.digits, round(conf.high_ef_only, hr.digits))})")),
+           hr_ef_biomarker = case_when(!is.na(estimate_ef_biomarker) ~
+    glue("{sprintf('%.*f', hr.digits, round(estimate_ef_biomarker, hr.digits))},
+         ({sprintf('%.*f', hr.digits, round(conf.low_ef_biomarker, hr.digits))},
+         {sprintf('%.*f', hr.digits, round(conf.high_ef_biomarker, hr.digits))})")),
+           hr_lang_only = case_when(!is.na(estimate_lang_only) ~
+    glue("{sprintf('%.*f', hr.digits, round(estimate_lang_only, hr.digits))},
+         ({sprintf('%.*f', hr.digits, round(conf.low_lang_only, hr.digits))},
+         {sprintf('%.*f', hr.digits, round(conf.high_lang_only, hr.digits))})")),
+           hr_lang_biomarker = case_when(!is.na(estimate_lang_biomarker) ~
+    glue("{sprintf('%.*f', hr.digits, round(estimate_lang_biomarker, hr.digits))},
+         ({sprintf('%.*f', hr.digits, round(conf.low_lang_biomarker, hr.digits))},
+         {sprintf('%.*f', hr.digits, round(conf.high_lang_biomarker, hr.digits))})")), 
+           hr_vsp_only = case_when(!is.na(estimate_vsp_only) ~
+    glue("{sprintf('%.*f', hr.digits, round(estimate_vsp_only, hr.digits))},
+         ({sprintf('%.*f', hr.digits, round(conf.low_vsp_only, hr.digits))},
+         {sprintf('%.*f', hr.digits, round(conf.high_vsp_only, hr.digits))})")),
+           hr_vsp_biomarker = case_when(!is.na(estimate_vsp_biomarker) ~
+    glue("{sprintf('%.*f', hr.digits, round(estimate_vsp_biomarker, hr.digits))},
+         ({sprintf('%.*f', hr.digits, round(conf.low_vsp_biomarker, hr.digits))},
+         {sprintf('%.*f', hr.digits, round(conf.high_vsp_biomarker, hr.digits))})")),
+           hr_all_only = case_when(!is.na(estimate_all_only) ~
+    glue("{sprintf('%.*f', hr.digits, round(estimate_all_only, hr.digits))},
+         ({sprintf('%.*f', hr.digits, round(conf.low_all_only, hr.digits))},
+         {sprintf('%.*f', hr.digits, round(conf.high_all_only, hr.digits))})")),
+           hr_all_biomarker = case_when(!is.na(estimate_all_biomarker) ~
+    glue("{sprintf('%.*f', hr.digits, round(estimate_all_biomarker, hr.digits))},
+         ({sprintf('%.*f', hr.digits, round(conf.low_all_biomarker, hr.digits))},
+         {sprintf('%.*f', hr.digits, round(conf.high_all_biomarker, hr.digits))})"))
+    ) %>%
+    
+    select(term, hr_biomarker, p.value_biomarker,
+           hr_mem_only, p.value_mem_only, 
+           hr_mem_biomarker, p.value_mem_biomarker, 
+           hr_ef_only, p.value_ef_only, 
+           hr_ef_biomarker, p.value_ef_biomarker, 
+           hr_lang_only, p.value_lang_only, 
+           hr_lang_biomarker, p.value_lang_biomarker,
+           hr_vsp_only, p.value_vsp_only, 
+           hr_vsp_biomarker, p.value_vsp_biomarker, 
+           hr_all_only, p.value_all_only, 
+           hr_all_biomarker, p.value_all_biomarker) %>%
+    left_join(row_order_tb, by = "term") %>%
+    arrange(order) %>%
+    select(-order)
+  
+   
+  foo %>%
+    gt(rowname_col = "term") %>%
+      tab_stubhead(label = "Covariate") %>%
+      
+      fmt_missing(columns = everything(), missing_text = "") %>%
+      fmt_number(columns = starts_with("p"), decimals = pvalue.digits) %>%
+      cols_width(vars("term") ~ px(150),
+                 starts_with("p.value") ~ px(150),
+                 starts_with("hr_") ~ px(80),
+                 everything() ~ px(100)
+                 ) %>%
+      tab_header(title = mytitle) %>%
+      tab_source_note(
+        source_note = "Reference category for the retest domains is the first quartile (best retest)") %>%
+    cols_label(hr_biomarker = "HR (95% CI)",
+               p.value_biomarker = "p-value",
+               hr_mem_only = "HR (95% CI)",
+               p.value_mem_only = "p-value",
+               hr_mem_biomarker = "HR (95% CI)",
+               p.value_mem_biomarker = "p-value",
+               hr_ef_only = "HR (95% CI)",
+               p.value_ef_only = "p-value",
+               hr_ef_biomarker = "HR (95% CI)",
+               p.value_ef_biomarker = "p-value",
+               hr_lang_only = "HR (95% CI)",
+               p.value_lang_only = "p-value",
+               hr_lang_biomarker = "HR (95% CI)",
+               p.value_lang_biomarker = "p-value",
+               hr_vsp_only = "HR (95% CI)",
+               p.value_vsp_only = "p-value",
+               hr_vsp_biomarker = "HR (95% CI)",
+               p.value_vsp_biomarker = "p-value",
+               hr_all_only = "HR (95% CI)",
+               p.value_all_only = "p-value",
+               hr_all_biomarker = "HR (95% CI)",
+               p.value_all_biomarker = "p-value") %>%
+    tab_spanner(label = biomarker, columns = vars(hr_biomarker, p.value_biomarker)) %>%
+    tab_spanner(label = "Memory", columns = contains("mem_only")) %>%
+    tab_spanner(label = glue::glue("Memory + {biomarker}"), 
+                columns = contains("mem_biomarker")) %>%
+    tab_spanner(label = "Executive Function", columns = contains("ef_only")) %>%
+    tab_spanner(label = glue::glue("Executive Function + {biomarker}"), 
+                columns = contains("ef_biomarker")) %>%
+    tab_spanner(label = "Language", columns = contains("lang_only")) %>%
+    tab_spanner(label = glue::glue("Language + {biomarker}"), 
+                columns = contains("lang_biomarker")) %>%
+    tab_spanner(label = "Visualspatial", columns = contains("vsp_only")) %>%
+    tab_spanner(label = glue::glue("Visualspatial + {biomarker}"), 
+                columns = contains("vsp_biomarker")) %>%
+    tab_spanner(label = "All domains", columns = contains("all_only")) %>%
+    tab_spanner(label = glue::glue("All domains + {biomarker}"), 
+                columns = contains("all_biomarker")) %>%
+    tab_style(
+      style = list(
+        cell_fill(color = highlight.color)
+        ),
+      locations = cells_body(
+        columns = vars(hr_biomarker, p.value_biomarker),
+        rows = p.value_biomarker < highlight.pvalue)
+      ) %>%
+    tab_style(
+      style = list(
+        cell_fill(color = highlight.color)
+        ),
+      locations = cells_body(
+        columns = contains("mem_only"),
+        rows = p.value_mem_only < highlight.pvalue)
+      ) %>%
+    tab_style(
+      style = list(
+        cell_fill(color = highlight.color)
+        ),
+      locations = cells_body(
+        columns = contains("mem_biomarker"),
+        rows = p.value_mem_biomarker < highlight.pvalue)
+      ) %>%
+    tab_style(
+      style = list(
+        cell_fill(color = highlight.color)
+        ),
+      locations = cells_body(
+        columns = contains("ef_only"),
+        rows = p.value_ef_only < highlight.pvalue)
+      ) %>%
+    tab_style(
+      style = list(
+        cell_fill(color = highlight.color)
+        ),
+      locations = cells_body(
+        columns = contains("ef_biomarker"),
+        rows = p.value_ef_biomarker < highlight.pvalue)
+      ) %>%
+    tab_style(
+      style = list(
+        cell_fill(color = highlight.color)
+        ),
+      locations = cells_body(
+        columns = contains("lang_only"),
+        rows = p.value_lang_only < highlight.pvalue)
+      ) %>%
+    tab_style(
+      style = list(
+        cell_fill(color = highlight.color)
+        ),
+      locations = cells_body(
+        columns = contains("lang_biomarker"),
+        rows = p.value_lang_biomarker < highlight.pvalue)
+      ) %>%
+    tab_style(
+      style = list(
+        cell_fill(color = highlight.color)
+        ),
+      locations = cells_body(
+        columns = contains("vsp_only"),
+        rows = p.value_vsp_only < highlight.pvalue)
+      ) %>%
+    tab_style(
+      style = list(
+        cell_fill(color = highlight.color)
+        ),
+      locations = cells_body(
+        columns = contains("vsp_biomarker"),
+        rows = p.value_vsp_biomarker < highlight.pvalue)
+      ) %>%
+    tab_style(
+      style = list(
+        cell_fill(color = highlight.color)
+        ),
+      locations = cells_body(
+        columns = contains("all_only"),
+        rows = p.value_all_only < highlight.pvalue)
+      ) %>%
+    tab_style(
+      style = list(
+        cell_fill(color = highlight.color)
+        ),
+      locations = cells_body(
+        columns = contains("all_biomarker"),
+        rows = p.value_all_biomarker < highlight.pvalue)
+      ) %>%
+    tab_row_group(
+      group = "Covariates",
+      rows = vars(agebl, ptsex, pteducat)
+    ) %>%
+    tab_row_group(
+      group = "Visualspatial",
+      rows = starts_with("vsp")
+    ) %>%
+    tab_row_group(
+      group = "Language",
+      rows = starts_with("lang")
+    ) %>%
+    tab_row_group(
+      group = "Executive Function",
+      rows = starts_with("ef")
+    ) %>%
+    tab_row_group(
+      group = "Memory",
+      rows = starts_with("mem")
+    ) %>%
+    tab_row_group(
+      group = "Biomarker",
+      rows = 1
+    ) %>% 
+    cols_align(
+      align = "left",
+      starts_with("p.value")
+    ) %>% 
+    cols_align(
+      align = "center",
+      starts_with("hr")
+    ) %>%
+    tab_options(
+        table.background.color = "#f4f3ed",
+        table.font.size = px(12),
+        
+        heading.title.font.size = px(16),
+        heading.title.font.weight = "bolder",
+        column_labels.background.color = "#E85A4F",
+        column_labels.font.size = px(14),
+        row_group.font.weight = "bold",
+        data_row.padding = px(5),
+        row.striping.background_color = "#dfcfb7",
+        row.striping.include_stub = TRUE,
+        row.striping.include_table_body = TRUE
+    )
+    
+}
+
+# make_hr_table(fitted.cox.models, tidy_cn_apoe, "apoe4", "Some title")
+
+make_summary_table <- function(df, model, biomarker, mytitle) {
+  
+  foo <- df %>%
+    select(name, {{model}}) %>%
+    unnest(c({{model}})) %>%
+    select(name, n, concordance) %>%
+    mutate(nice.name = 
+           case_when(name=="biomarker" ~ glue("{biomarker}"),
+                     name=="mem" ~ glue("Memory"),
+                     name=="ef" ~ glue("Executive function"),
+                     name=="lang" ~ glue("Language"),
+                     name=="vsp" ~ glue("Visualspatial"),
+                     name=="all" ~ glue("All domains"),
+                     name=="mem_biomarker" ~ glue("Memory + {biomarker}"),
+                     name=="ef_biomarker" ~ glue("Executive function + {biomarker}"),
+                     name=="lang_biomarker" ~ glue("Language + {biomarker}"),
+                     name=="vsp_biomarker" ~ glue("Visualspatial + {biomarker}"),
+                     name=="all_biomarker" ~ glue("All domains + {biomarker}"))) %>%
+    select(-name)
+  
+  foo %>%
+    gt(rowname_col = "nice.name") %>%
+    tab_stubhead(label = "Model") %>%
+    tab_header(title = mytitle) %>%
+    fmt_number(columns = vars(concordance),
+               decimals = 2) %>%
+    tab_row_group(
+      group = "All Domains",
+      rows = starts_with("all")
+    ) %>%
+    tab_row_group(
+      group = "Visualspatial",
+      rows = starts_with("vis")
+    ) %>%
+    tab_row_group(
+      group = "Language",
+      rows = starts_with("lang")
+    ) %>%
+    tab_row_group(
+      group = "Executive Function",
+      rows = starts_with("exe")
+    ) %>%
+    tab_row_group(
+      group = "Memory",
+      rows = starts_with("mem")
+    ) %>%
+    tab_row_group(
+      group = "Biomarker",
+      rows = 1
+    ) %>%
+    tab_options(
+        table.background.color = "#f4f3ed",
+        table.font.size = px(12),
+        
+        heading.title.font.size = px(16),
+        heading.title.font.weight = "bolder",
+        column_labels.background.color = "#E85A4F",
+        column_labels.font.size = px(14),
+        row_group.font.weight = "bold",
+        data_row.padding = px(5),
+        row.striping.background_color = "#dfcfb7",
+        row.striping.include_stub = TRUE,
+        row.striping.include_table_body = TRUE
+    )
+
+}
+# make_summary_table(fitted.cox.models, glance_cn_apoe, "apoe4", "Some title")
+```
+
+# Time to event comparison between retest effects and biomarkers
+
+This section compares how well the learning effects predict MCI/AD conversion to conventional biomarkers (imaging and genetic) predicting MCI/AD conversion.  The samples will be different for most of the analyses, because not all participants had all the biomarkers collected.  For biomarkers measured multiple times we will use those from the 6 month visit.
+
+The biomarkers we will compare are:
+
+* APOE 4 genotype - time invariant
+* CSF AD signature from De Meyer (2010) - time invariant in dataset, unsure which visit was used
+* Amyloid positivity - TBD
+* Entorhinal cortical thickness (average between left and right) - 6M visit
+* Hippocampus volume (separate 1.5T and 3T analyses) - 6M visit
+* White matter hyperintensity - 6M visit
+* Ventricular volume - TBD
+* Subjective complaints - TBD
+
+We will do separate analyses for baseline Normal to MCI/AD, and for baseline MCI to AD.
+
+Models control for age, sex, and years of education.
+
+
+## APOE 4
+
+Any APOE 4 allele.
+
+### Normal to MCI/AD
+
+```{r}
+adni.survival.cn %>%
+  group_by(event) %>%
+  count(apoe4) %>%
+  spread(key = apoe4, value = n) %>%
+  ungroup() %>%
+  gt(rowname_col = "event") %>%
+    tab_stubhead(label = "Conversion") %>%
+    tab_header(title = "Any APOE 4 allele by conversion status") %>%
+    cols_label(`0` = "No",
+               `1` = "Yes") %>%
+    tab_spanner(label = "Any APOE 4 allele", columns = vars(`0`, `1`)) %>%
+    tab_options(
+        table.background.color = "#f4f3ed",
+        table.font.size = px(12),
+        
+        heading.title.font.size = px(16),
+        heading.title.font.weight = "bolder",
+        column_labels.background.color = "#E85A4F",
+        column_labels.font.size = px(14),
+        row_group.font.weight = "bold",
+        data_row.padding = px(5),
+        row.striping.background_color = "#dfcfb7",
+        row.striping.include_stub = TRUE,
+        row.striping.include_table_body = TRUE
+    )
+  
+  
+  
+  # kable(caption = "Any APOE 4 allele by conversion status",
+  #       col.names = c("Conversion", "No", "Yes")) %>%
+  # add_header_above(c("", "Any APOE 4 allele" = 2)) %>%
+  # kable_styling(bootstrap_options = kable.styling.bootstrap.option,
+  #               full_width = F, position = kable.styling.position.option)
+
+```
+
+
+```{r}
+
+make_hr_table(fitted.cox.models, tidy_cn_apoe, "apoe4", 
+            "Cox proportional hazards model (Baseline Normal)")
+
+make_summary_table(fitted.cox.models, glance_cn_apoe, "apoe4", 
+                   "Summary statistics for Cox models")
+```
+
+### MCI to AD
+
+```{r}
+adni.survival.mci %>%
+  group_by(event) %>%
+  count(apoe4) %>%
+  spread(key = apoe4, value = n) %>%
+  ungroup() %>%
+  gt(rowname_col = "event") %>%
+    tab_stubhead(label = "Conversion") %>%
+    tab_header(title = "Any APOE 4 allele by conversion status") %>%
+    cols_label(`0` = "No",
+               `1` = "Yes") %>%
+    tab_spanner(label = "Any APOE 4 allele", columns = vars(`0`, `1`)) %>%
+    tab_options(
+        table.background.color = "#f4f3ed",
+        table.font.size = px(12),
+        
+        heading.title.font.size = px(16),
+        heading.title.font.weight = "bolder",
+        column_labels.background.color = "#E85A4F",
+        column_labels.font.size = px(14),
+        row_group.font.weight = "bold",
+        data_row.padding = px(5),
+        row.striping.background_color = "#dfcfb7",
+        row.striping.include_stub = TRUE,
+        row.striping.include_table_body = TRUE
+    )
+
+  # kable(caption = "Any APOE 4 allele by conversion status",
+  #       col.names = c("Conversion", "No", "Yes")) %>%
+  # add_header_above(c("", "Any APOE 4 allele" = 2)) %>%
+  # kable_styling(bootstrap_options = kable.styling.bootstrap.option,
+  #               full_width = F, position = kable.styling.position.option)
+
+```
+
+```{r}
+
+make_hr_table(fitted.cox.models, tidy_mci_apoe, "apoe4", "Cox proportional hazards model (Baseline MCI)")
+
+make_summary_table(fitted.cox.models, glance_mci_apoe, "apoe4", 
+                   "Summary statistics for Cox models")
+```
+
+
+## CSF AD signature
+
+CSF AD signature from De Meyer (2010)
+
+### Normal to MCI/AD
+
+```{r}
+adni.survival.cn %>%
+  group_by(event) %>%
+  count(cluster_mixtmodel) %>%
+  spread(key = cluster_mixtmodel, value = n) %>%
+  ungroup() %>%
+  gt(rowname_col = "event") %>%
+    tab_stubhead(label = "Conversion") %>%
+    tab_header(title = "CSF AD signature by conversion status") %>%
+    cols_label(`0` = "No",
+               `1` = "Yes",
+               `<NA>` = "Missing") %>%
+    tab_spanner(label = "CSF AD signature", columns = vars(`0`, `1`, `<NA>`)) %>%
+    tab_options(
+        table.background.color = "#f4f3ed",
+        table.font.size = px(12),
+        
+        heading.title.font.size = px(16),
+        heading.title.font.weight = "bolder",
+        column_labels.background.color = "#E85A4F",
+        column_labels.font.size = px(14),
+        row_group.font.weight = "bold",
+        data_row.padding = px(5),
+        row.striping.background_color = "#dfcfb7",
+        row.striping.include_stub = TRUE,
+        row.striping.include_table_body = TRUE
+    )
+
+  # kable(caption = "CSF AD signature by conversion status",
+  #       col.names = c("Conversion", "No", "Yes", "Missing")) %>%
+  # add_header_above(c("", "CSF AD signature" = 3)) %>%
+  # kable_styling(bootstrap_options = kable.styling.bootstrap.option,
+  #               full_width = F, position = kable.styling.position.option)
+
+```
+
+```{r}
+
+make_hr_table(fitted.cox.models, tidy_cn_csf, "cluster_mixtmodel", 
+            "Cox proportional hazards model (Baseline Normal)")
+
+make_summary_table(fitted.cox.models, glance_cn_csf, "csf", 
+                   "Summary statistics for Cox models")
+```
+
+### MCI to AD
+
+```{r}
+adni.survival.mci %>%
+  group_by(event) %>%
+  count(cluster_mixtmodel) %>%
+  spread(key = cluster_mixtmodel, value = n) %>%
+  ungroup() %>%
+  gt(rowname_col = "event") %>%
+    tab_stubhead(label = "Conversion") %>%
+    tab_header(title = "CSF AD signature by conversion status") %>%
+    cols_label(`0` = "No",
+               `1` = "Yes",
+               `<NA>` = "Missing") %>%
+    tab_spanner(label = "CSF AD signature", columns = vars(`0`, `1`, `<NA>`)) %>%
+    tab_options(
+        table.background.color = "#f4f3ed",
+        table.font.size = px(12),
+        
+        heading.title.font.size = px(16),
+        heading.title.font.weight = "bolder",
+        column_labels.background.color = "#E85A4F",
+        column_labels.font.size = px(14),
+        row_group.font.weight = "bold",
+        data_row.padding = px(5),
+        row.striping.background_color = "#dfcfb7",
+        row.striping.include_stub = TRUE,
+        row.striping.include_table_body = TRUE
+    )
+
+  # kable(caption = "CSF AD signature by conversion status",
+  #       col.names = c("Conversion", "No", "Yes", "Missing")) %>%
+  # add_header_above(c("", "CSF AD signature" = 3)) %>%
+  # kable_styling(bootstrap_options = kable.styling.bootstrap.option,
+  #               full_width = F, position = kable.styling.position.option)
+
+```
+
+```{r}
+
+make_hr_table(fitted.cox.models, tidy_mci_csf, "cluster_mixtmodel", 
+            "Cox proportional hazards model (Baseline Normal)")
+
+make_summary_table(fitted.cox.models, glance_mci_csf, "csf", 
+                   "Summary statistics for Cox models")
+```
+
+## Entorhinal cortical thickness
+
+The left and right thicknesses are averaged, and then z-scored.  The z-scored used 2*SD in its standardization so that the effects are on the same scale as the cognitive domain quantiles.
+
+### Normal to MCI/AD
+
+```{r}
+adni.survival.cn %>%
+  ggplot(aes(x = entorhinal_z)) +
+    geom_histogram() +
+    facet_wrap(~event, ncol=1) +
+    ggtitle("Entorhinal cortical thickness by conversion status") +
+    scale_x_continuous("Standardized Entorinal cortical thickness")
+  
+```
+
+```{r}
+
+make_hr_table(fitted.cox.models, tidy_cn_ent, "entorhinal_z", 
+            "Cox proportional hazards model (Baseline Normal)")
+
+make_summary_table(fitted.cox.models, glance_cn_ent, "entorhinal", 
+                   "Summary statistics for Cox models")
+```
+
+### MCI to AD
+
+```{r}
+adni.survival.mci %>%
+  ggplot(aes(x = entorhinal_z)) +
+    geom_histogram() +
+    facet_wrap(~event, ncol=1) +
+    ggtitle("Entorhinal cortical thickness by conversion status") +
+    scale_x_continuous("Standardized Entorinal cortical thickness")
+  
+```
+
+```{r}
+
+make_hr_table(fitted.cox.models, tidy_mci_ent, "entorhinal_z", 
+            "Cox proportional hazards model (Baseline Normal)")
+
+make_summary_table(fitted.cox.models, glance_mci_ent, "entorhinal", 
+                   "Summary statistics for Cox models")
+```
+
+## Hippocampal volume (1.5T)
+
+Hippocampal volume from 1.5T MRI (z-scored). The z-scored used 2*SD in its standardization so that the effects are on the same scale as the cognitive domain quantiles.
+
+### Normal to MCI/AD
+
+```{r}
+adni.survival.cn %>%
+  ggplot(aes(x = hcv_z)) +
+    geom_histogram() +
+    facet_wrap(~event, ncol=1) +
+    ggtitle("Hippocampal volume (1.5T) by conversion status") +
+    scale_x_continuous("Standardized hippocampal volume")
+  
+```
+
+```{r}
+
+make_hr_table(fitted.cox.models, tidy_cn_hcv, "hcv_z", 
+            "Cox proportional hazards model (Baseline Normal)")
+
+make_summary_table(fitted.cox.models, glance_cn_hcv, "hippocampal", 
+                   "Summary statistics for Cox models")
+```
+
+### MCI to AD
+
+```{r}
+adni.survival.mci %>%
+  ggplot(aes(x = hcv_z)) +
+    geom_histogram() +
+    facet_wrap(~event, ncol=1) +
+    ggtitle("Hippocampal volume (1.5T) by conversion status") +
+    scale_x_continuous("Standardized Hippocampal volume (1.5T)")
+  
+```
+
+```{r}
+
+make_hr_table(fitted.cox.models, tidy_mci_hcv, "hcv_z", 
+            "Cox proportional hazards model (Baseline Normal)")
+
+make_summary_table(fitted.cox.models, glance_mci_hcv, "hippocampal", 
+                   "Summary statistics for Cox models")
+```
+
+## Hippocampal volume (3T)
+
+Hippocampal volume from 3T MRI (z-scored). 
+
+There are only 19 participants in the baseline normal cognition group that had an 3T MRI scan, so no models were fit. 
+
+### Normal to MCI/AD
+
+```{r}
+adni.survival.cn %>%
+  ggplot(aes(x = hcv3_z)) +
+    geom_histogram() +
+    facet_wrap(~event, ncol=1) +
+    ggtitle("Hippocampal volume (3T) by conversion status") +
+    scale_x_continuous("Standardized hippocampal volume")
+  
+```
+
+
+### MCI to AD
+
+There are only 24 participants in the baseline MCI cognition group that had an 3T MRI scan, so no models were fit. 
+
+```{r}
+adni.survival.mci %>%
+  ggplot(aes(x = hcv3_z)) +
+    geom_histogram() +
+    facet_wrap(~event, ncol=1) +
+    ggtitle("Hippocampal volume (3T) by conversion status") +
+    scale_x_continuous("Standardized Hippocampal volume")
+  
+```
+
